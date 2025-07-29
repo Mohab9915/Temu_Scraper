@@ -1,0 +1,12 @@
+# Ignore browser session data
+user_data/
+
+# Ignore Python cache
+__pycache__/
+*.pyc
+
+# Ignore generated files
+products.csv
+latest_response.json
+headers.json
+failed_response.txt
