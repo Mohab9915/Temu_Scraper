@@ -32,7 +32,6 @@ PRODUCTS_CSV = Path(__file__).with_name("products.csv")
 def run_playwright():
     """Launch browser, wait for user login, intercept headers."""
     with sync_playwright() as p:
-        # Use a persistent context to save login session
         user_data_dir = Path(__file__).parent / "user_data"
         context = p.chromium.launch_persistent_context(
             user_data_dir,
@@ -41,17 +40,14 @@ def run_playwright():
             locale="en-US",
             user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/110.0.0.0 Safari/537.36"
         )
-        # Force English language via cookies
         context.add_cookies([
             {"name": "language", "value": "en", "domain": ".temu.com", "path": "/"},
             {"name": "locale", "value": "en_US", "domain": ".temu.com", "path": "/"},
         ])
         page = context.new_page()
 
-        # Apply stealth measures
         stealth_sync(page)
 
-        # Navigate to the homepage first to handle login
         page.goto("https://www.temu.com/", wait_until="networkidle")
 
         print("Browser opened. Please log in or solve any CAPTCHA.")
@@ -59,11 +55,13 @@ def run_playwright():
         print("Once you are logged in and on the homepage, press Enter to continue...")
         input()
 
-        print("Navigating to search page and waiting for API response...")
-        # Now, navigate to the search page and wait for the response simultaneously
-        with page.expect_response("**/api/poppy/v1/search?scene=search") as response_info:
-            page.goto(f"https://www.temu.com/search_result.html?search_key={SEARCH_QUERY}")
-        
+        print("Performing search and waiting for API response...")
+        with page.expect_response("**/api/poppy/v1/search?scene=search", timeout=60000) as response_info:
+            print("Simulating user typing and clicking search...")
+            page.locator('#searchInput').type(SEARCH_QUERY, delay=100)
+            page.locator('#searchInput').press('Enter')
+            time.sleep(5)
+            page.locator('#searchInput').press('Enter')
         response = response_info.value
 
         if not response.ok:
@@ -78,7 +76,6 @@ def run_playwright():
             print("API response did not contain any products.")
             return
 
-        # Save to CSV
         fieldnames = list(products[0].keys())
         with PRODUCTS_CSV.open("w", newline="", encoding="utf-8") as csvfile:
             writer = csv.DictWriter(csvfile, fieldnames=fieldnames)
