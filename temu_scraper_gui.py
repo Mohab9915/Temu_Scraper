@@ -45,6 +45,7 @@ class TemuScraperGUI:
         self.search_query = tk.StringVar(value="menshoes")
         self.min_interval = tk.IntVar(value=2)
         self.max_interval = tk.IntVar(value=5)
+        self.cooldown_frequency = tk.IntVar(value=2)
         self.use_proxy = tk.BooleanVar(value=False)
         self.proxy_server = tk.StringVar(value="")
         self.output_file = tk.StringVar(value="products.csv")
@@ -103,9 +104,16 @@ class TemuScraperGUI:
         ttk.Label(interval_frame, text="to").pack(side=tk.LEFT, padx=(0, 5))
         ttk.Spinbox(interval_frame, from_=2, to=15, textvariable=self.max_interval, width=5).pack(side=tk.LEFT)
         
+        # Cooldown frequency setting
+        cooldown_frame = ttk.Frame(input_frame)
+        cooldown_frame.grid(row=0, column=3, sticky=tk.W)
+        ttk.Label(cooldown_frame, text="Cooldown every:").pack(side=tk.LEFT, padx=(15, 5))
+        ttk.Spinbox(cooldown_frame, from_=1, to=10, textvariable=self.cooldown_frequency, width=5).pack(side=tk.LEFT, padx=(0, 5))
+        ttk.Label(cooldown_frame, text="requests").pack(side=tk.LEFT)
+        
         # Proxy settings
         proxy_frame = ttk.Frame(input_frame)
-        proxy_frame.grid(row=1, column=0, columnspan=3, sticky=(tk.W, tk.E), pady=(10, 0))
+        proxy_frame.grid(row=1, column=0, columnspan=4, sticky=(tk.W, tk.E), pady=(10, 0))
         proxy_frame.columnconfigure(1, weight=1)
         
         ttk.Checkbutton(proxy_frame, text="Use Proxy", variable=self.use_proxy, 
@@ -325,12 +333,23 @@ class TemuScraperGUI:
                 
                 context = browser.new_context(
                     locale="en-US",
+                    timezone_id="America/New_York",
+                    geolocation={"longitude": -74.0060, "latitude": 40.7128},  # New York coordinates
+                    permissions=["geolocation"],
                     user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/110.0.0.0 Safari/537.36",
+                    extra_http_headers={
+                        "Accept-Language": "en-US,en;q=0.9",
+                        "Accept-Encoding": "gzip, deflate, br",
+                        "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8"
+                    }
                 )
                 
+                # Force English language and US locale
                 context.add_cookies([
                     {"name": "language", "value": "en", "domain": ".temu.com", "path": "/"},
                     {"name": "locale", "value": "en_US", "domain": ".temu.com", "path": "/"},
+                    {"name": "currency", "value": "USD", "domain": ".temu.com", "path": "/"},
+                    {"name": "region", "value": "US", "domain": ".temu.com", "path": "/"},
                 ])
                 
                 page = context.new_page()
@@ -452,22 +471,6 @@ class TemuScraperGUI:
                 
                 while not self.stop_requested:
                     try:
-                        # Random delay between requests based on user settings
-                        min_wait = self.min_interval.get() * 60
-                        max_wait = self.max_interval.get() * 60
-                        wait_time = random.uniform(min_wait, max_wait)
-                        
-                        self.log_message(f"Waiting {wait_time/60:.2f} minutes before next request...")
-                        self.update_stats(len(self.products), f"Waiting {wait_time/60:.1f} min...")
-                        
-                        for i in range(int(wait_time)):
-                            if self.stop_requested:
-                                break
-                            time.sleep(1)
-                            
-                        if self.stop_requested:
-                            break
-                            
                         # Human-like scrolling and interaction
                         time.sleep(random.uniform(8, 15))
                         page.mouse.move(random.randint(100, 800), random.randint(100, 600))
@@ -518,6 +521,19 @@ class TemuScraperGUI:
                         self.log_message(f"Successfully saved {len(new_products)} more products. Total: {len(self.products)}")
                         self.update_stats(len(self.products), "Scraping products...")
                         
+                        # Check if cooldown is needed based on user configuration
+                        if see_more_count % self.cooldown_frequency.get() == 0:
+                            cooldown_min = self.min_interval.get() * 60
+                            cooldown_max = self.max_interval.get() * 60
+                            wait_duration = random.uniform(cooldown_min, cooldown_max)
+                            self.log_message(f"Cooldown triggered after {self.cooldown_frequency.get()} requests. Pausing for {wait_duration / 60:.2f} minutes...")
+                            self.update_stats(len(self.products), f"Cooldown: {wait_duration/60:.1f} min...")
+                            
+                            for i in range(int(wait_duration)):
+                                if self.stop_requested:
+                                    break
+                                time.sleep(1)
+                        
                     except Exception as e:
                         self.log_message(f"An error occurred: {e}")
                         break
@@ -528,8 +544,11 @@ class TemuScraperGUI:
             
         finally:
             # Cleanup
-            if hasattr(self, 'context') and self.context:
-                self.context.close()
+            try:
+                if hasattr(self, 'context') and self.context:
+                    self.context.close()
+            except Exception as e:
+                self.log_message(f"Cleanup warning: {e}")
                 
             self.root.after(0, self.scraping_finished)
             
@@ -542,14 +561,22 @@ class TemuScraperGUI:
         
     def scraping_finished(self):
         """Called when scraping is complete"""
-        self.log_message("Scraping finished!")
-        if self.products:
-            self.save_products_to_csv()
-            self.update_stats(len(self.products), "Completed successfully")
-            messagebox.showinfo("Complete", f"Scraping completed!\n{len(self.products)} products saved to {self.output_file.get()}")
+        if self.stop_requested:
+            self.log_message("Scraping stopped by user.")
+            if self.products:
+                self.update_stats(len(self.products), "Stopped - results saved")
+                messagebox.showinfo("Stopped", f"Scraping stopped!\n{len(self.products)} products saved to {self.output_file.get()}")
+            else:
+                self.update_stats(0, "Stopped - no products found")
         else:
-            self.update_stats(0, "No products found")
-            
+            self.log_message("Scraping finished!")
+            if self.products:
+                self.save_products_to_csv()
+                self.update_stats(len(self.products), "Completed successfully")
+                messagebox.showinfo("Complete", f"Scraping completed!\n{len(self.products)} products saved to {self.output_file.get()}")
+            else:
+                self.update_stats(0, "No products found")
+                
         self.reset_ui()
         
     def extract_products(self, data):
