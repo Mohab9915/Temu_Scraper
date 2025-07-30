@@ -332,6 +332,21 @@ class TemuScraperGUI:
         if self.products:
             self.save_products_to_csv()
             
+        # Schedule UI reset after a short delay to ensure proper cleanup
+        self.root.after(3000, self.handle_stop_completion)  # 3 second delay
+            
+    def handle_stop_completion(self):
+        """Handle completion of stop operation and reset UI"""
+        if self.stop_requested:
+            self.log_message("Scraping stopped by user.")
+            if self.products:
+                self.update_stats(len(self.products), "Stopped - results saved")
+                messagebox.showinfo("Stopped", f"Scraping stopped!\n{len(self.products)} products saved to {self.output_file.get()}")
+            else:
+                self.update_stats(0, "Stopped - no products found")
+            
+            self.reset_ui()
+            
     def reset_ui(self):
         """Reset UI to initial state"""
         self.scraping_active = False
@@ -491,15 +506,17 @@ class TemuScraperGUI:
                             time.sleep(random.uniform(0.5, 1.5))
                             search_input.type(self.search_query.get(), delay=random.uniform(80, 200))
                             search_input.press('Enter')
-                            time.sleep(random.uniform(4, 7))
+
+                            # Show CAPTCHA dialog
+                            self.root.after(0, self.show_captcha_dialog)
+                            self.captcha_solved_event.wait()
                             search_input.press('Enter')
-                        
+
                         response = response_info.value
                         
-                        # Show CAPTCHA dialog
-                        self.root.after(0, self.show_captcha_dialog)
-                        self.captcha_solved_event.wait()
+
                         
+
                         if self.stop_requested:
                             return
                             
