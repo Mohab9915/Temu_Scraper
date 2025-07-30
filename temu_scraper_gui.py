@@ -49,6 +49,10 @@ class TemuScraperGUI:
         self.use_proxy = tk.BooleanVar(value=False)
         self.proxy_server = tk.StringVar(value="")
         self.output_file = tk.StringVar(value="products.csv")
+        self.save_session = tk.BooleanVar(value=True)
+        
+        # Session persistence
+        self.session_dir = Path(__file__).parent / "temu_session"
         
         self.setup_ui()
         self.start_log_processor()
@@ -122,6 +126,21 @@ class TemuScraperGUI:
         self.proxy_entry = ttk.Entry(proxy_frame, textvariable=self.proxy_server, 
                                    state="disabled")
         self.proxy_entry.grid(row=0, column=1, sticky=(tk.W, tk.E), padx=(10, 10))
+        
+        # Session saving option
+        ttk.Checkbutton(proxy_frame, text="Save Login Session", variable=self.save_session).grid(row=1, column=0, sticky=tk.W, pady=(5, 0))
+        
+        # Session management buttons
+        session_buttons_frame = ttk.Frame(proxy_frame)
+        session_buttons_frame.grid(row=1, column=1, sticky=tk.W, padx=(10, 0), pady=(5, 0))
+        ttk.Button(session_buttons_frame, text="Clear Session", command=self.clear_session, width=12).pack(side=tk.LEFT, padx=(0, 5))
+        
+        # Session status
+        self.session_status_label = ttk.Label(proxy_frame, text="", foreground="gray")
+        self.session_status_label.grid(row=1, column=2, columnspan=2, sticky=tk.W, padx=(10, 0), pady=(5, 0))
+        
+        # Update session status on startup
+        self.update_session_status()
         
         # Output file
         ttk.Label(proxy_frame, text="Output CSV:").grid(row=0, column=2, sticky=tk.W, padx=(10, 5))
@@ -272,6 +291,37 @@ class TemuScraperGUI:
         self.captcha_button.config(state="disabled")
         self.captcha_solved_event.set()
         
+    def clear_session(self):
+        """Clear saved login session"""
+        try:
+            session_file = self.session_dir / "session.json"
+            if session_file.exists():
+                session_file.unlink()
+                self.log_message("Login session cleared. You'll need to login again next time.")
+                messagebox.showinfo("Session Cleared", "Login session has been cleared.\nYou'll need to login again next time.")
+            else:
+                self.log_message("No saved session to clear.")
+                messagebox.showinfo("No Session", "No saved login session found.")
+        except Exception as e:
+            self.log_message(f"Error clearing session: {e}")
+            messagebox.showerror("Error", f"Could not clear session: {e}")
+        finally:
+            self.update_session_status()
+            
+    def update_session_status(self):
+        """Update the session status display"""
+        session_file = self.session_dir / "session.json"
+        if session_file.exists():
+            try:
+                modified_time = session_file.stat().st_mtime
+                from datetime import datetime
+                modified_date = datetime.fromtimestamp(modified_time).strftime("%Y-%m-%d %H:%M")
+                self.session_status_label.config(text=f"Session saved: {modified_date}")
+            except Exception:
+                self.session_status_label.config(text="Session file exists")
+        else:
+            self.session_status_label.config(text="No saved session")
+    
     def stop_scraping(self):
         """Stop scraping and save results"""
         self.stop_requested = True
@@ -331,18 +381,41 @@ class TemuScraperGUI:
                     proxy=proxy_config
                 )
                 
-                context = browser.new_context(
-                    locale="en-US",
-                    timezone_id="America/New_York",
-                    geolocation={"longitude": -74.0060, "latitude": 40.7128},  # New York coordinates
-                    permissions=["geolocation"],
-                    user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/110.0.0.0 Safari/537.36",
-                    extra_http_headers={
+                # Create context with or without persistent session
+                context_options = {
+                    "locale": "en-US",
+                    "timezone_id": "America/New_York",
+                    "geolocation": {"longitude": -74.0060, "latitude": 40.7128},
+                    "permissions": ["geolocation"],
+                    "user_agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/110.0.0.0 Safari/537.36",
+                    "extra_http_headers": {
                         "Accept-Language": "en-US,en;q=0.9",
                         "Accept-Encoding": "gzip, deflate, br",
                         "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8"
                     }
-                )
+                }
+                
+                # Add persistent storage if session saving is enabled
+                if self.save_session.get():
+                    self.session_dir.mkdir(exist_ok=True)
+                    session_file = self.session_dir / "session.json"
+                    if session_file.exists():
+                        self.log_message(f"Found existing session file: {session_file}")
+                        context_options["storage_state"] = str(session_file)
+                        self.log_message("Using saved login session...")
+                    else:
+                        self.log_message("No existing session found - will create new session...")
+                else:
+                    self.log_message("Using temporary session (not saved)...")
+                    
+                try:
+                    context = browser.new_context(**context_options)
+                except Exception as e:
+                    # If session file is corrupted, create new context without it
+                    self.log_message(f"Session file issue: {e}. Creating fresh session...")
+                    if "storage_state" in context_options:
+                        del context_options["storage_state"]
+                    context = browser.new_context(**context_options)
                 
                 # Force English language and US locale
                 context.add_cookies([
@@ -537,18 +610,45 @@ class TemuScraperGUI:
                     except Exception as e:
                         self.log_message(f"An error occurred: {e}")
                         break
+                
+                # Save session before closing context (while it's still active)
+                if self.save_session.get() and hasattr(self, 'context') and self.context:
+                    try:
+                        self.log_message("Attempting to save login session...")
+                        self.session_dir.mkdir(exist_ok=True)
+                        storage_state = self.context.storage_state()
+                        session_file = self.session_dir / "session.json"
+                        
+                        with open(session_file, "w") as f:
+                            json.dump(storage_state, f, indent=2)
+                        
+                        # Verify the file was created and has content
+                        if session_file.exists() and session_file.stat().st_size > 0:
+                            self.log_message(f"✓ Login session saved successfully to {session_file}")
+                            self.log_message(f"Session file size: {session_file.stat().st_size} bytes")
+                            # Update session status in UI
+                            self.root.after(0, self.update_session_status)
+                        else:
+                            self.log_message("⚠ Session file created but appears empty!")
+                            
+                    except Exception as e:
+                        self.log_message(f"✗ Could not save session: {e}")
+                        import traceback
+                        self.log_message(f"Session save error details: {traceback.format_exc()}")
+                else:
+                    if not self.save_session.get():
+                        self.log_message("Session saving is disabled")
+                    elif not hasattr(self, 'context'):
+                        self.log_message("No context available for session saving")
+                    elif not self.context:
+                        self.log_message("Context is None, cannot save session")
                         
         except Exception as e:
             self.log_message(f"Scraper error: {e}")
             messagebox.showerror("Scraper Error", f"An error occurred: {e}")
             
-        finally:
-            # Cleanup
-            try:
-                if hasattr(self, 'context') and self.context:
-                    self.context.close()
-            except Exception as e:
-                self.log_message(f"Cleanup warning: {e}")
+        # The 'with sync_playwright()' block will automatically close context and browser
+        # when it exits, so we don't need manual cleanup
                 
             self.root.after(0, self.scraping_finished)
             
