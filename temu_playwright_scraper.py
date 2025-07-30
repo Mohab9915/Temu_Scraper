@@ -81,8 +81,39 @@ def run_playwright():
             writer = csv.DictWriter(csvfile, fieldnames=fieldnames)
             writer.writeheader()
             writer.writerows(products)
-        
+
         print(f"\n*** Successfully saved {len(products)} products to {PRODUCTS_CSV.name} ***")
+
+        while True:
+            try:
+                see_more_button = page.locator('div[class*="_2ugbvrpI"]:has-text("See more")')
+                see_more_button.scroll_into_view_if_needed()
+                
+                with page.expect_response("**/api/poppy/v1/search?scene=search", timeout=60000) as response_info:
+                    see_more_button.click()
+                
+                response = response_info.value
+                if not response.ok:
+                    print(f"API request failed with status {response.status}")
+                    break
+
+                data = response.json()
+                new_products = list(extract_products(data))
+
+                if not new_products:
+                    print("No more products found.")
+                    break
+
+                with PRODUCTS_CSV.open("a", newline="", encoding="utf-8") as csvfile:
+                    writer = csv.DictWriter(csvfile, fieldnames=fieldnames)
+                    writer.writerows(new_products)
+                
+                products.extend(new_products)
+                print(f"*** Successfully saved {len(new_products)} more products. Total: {len(products)} ***")
+
+            except Exception as e:
+                print(f"Could not find or click 'See more' button: {e}")
+                break
         context.close()
 
 
